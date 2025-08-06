@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# ************************************************************** #
+# ********************************************************************************************************************** #
 #   WHEN            WHO              WHAT, WHERE, WHY
-#   ----------      -----------      --------------------------  #
+#   ----------      -----------      ----------------------------------------------------------------------------------  #
 #   23/01/2024      Francis          Add timeout handling
-# ************************************************************** #
-
+#   ----------      -----------      ----------------------------------------------------------------------------------  #
+#   06/08/2025      Sirius           Fix port occupation issue by adding socket release in stop function, retaining del
+# *********************************************************************************************************************  #
 import usocket
 import log
 import utime
@@ -30,7 +31,6 @@ from queue import Queue
 WLAN_log = log.getLogger("WiFi")
 # 打开日志打印
 #log.basicConfig(level=log.INFO)
-
 class RET_CODE():
     RET_SUCCESS_CODE = 0
     RET_RESPONSE_ERROR_CODE = -1
@@ -39,12 +39,9 @@ class RET_CODE():
     RET_TIMEOUT_CODE = -4        # wait respose timeout
     RET_NOT_SUPOORT_CODE = -5    # this function not support now
     RET_NAT_NOT_OPEN_CODE = -6   # nat not open, if this error,you should restart device.
-
-
 class ESP8266:
     AP = 0  # SLIP_INNER
     STA = 1 # SLIP_OUTER
-
     def __init__(self, uart=UART.UART2, mode=STA, callback=None):
         self.__uart = uart
         self.__mode = mode
@@ -55,7 +52,6 @@ class ESP8266:
         self.__wait_resp = 0
         self.__send_time = 0
         slip.destroy()
-
         ret = slip.construct(self.__uart, self.__mode, 0)
         if ret == RET_CODE.RET_NAT_NOT_OPEN_CODE:
             return ValueError("nat is not open, you should restart device, and try again.")
@@ -64,17 +60,16 @@ class ESP8266:
         self.__queue = Queue(1)
         self.__sock = self.__socket_init()
         self.__threadid = _thread.start_new_thread(self.__Socket_Thread, ())
-
     def __socket_init(self):
+    
         # 创建一个socket实例
         sock = usocket.socket(usocket.AF_INET, usocket.SOCK_DGRAM, usocket.TCP_CUSTOMIZE_PORT)
-        sock.setsockopt(usocket.SOL_SOCKET, usocket.SO_REUSEADDR, 1)
+        sock.setsockopt(usocket.SOL_SOCKET, usocket.SO_REUSEADDR, 0)
         # 绑定IP
-        bind_addr = ('172.16.1.2', 5000)
+        bind_addr = ('172.16.1.2',5000)
         sock.bind(bind_addr)
         sock.settimeout(10)
         return sock
-
     def __socket_reinit(self):
         return self.__socket_init()
     
@@ -86,7 +81,6 @@ class ESP8266:
         elif self.__value[2] != 'OK':
             return RET_CODE.RET_RESPONSE_ERROR_CODE
         return RET_CODE.RET_SUCCESS_CODE
-
     # station模式
     def station(self, user, password):
         self.clear_remain()
@@ -99,7 +93,6 @@ class ESP8266:
             return RET_CODE.RET_PARAM_ERROR_CODE
         self.__Socket_UDP(__head, self.__message)
         return self.__socket_reponse()
-
     #ap 模式
     def ap(self, user, password):
         self.clear_remain()
@@ -113,7 +106,6 @@ class ESP8266:
             return RET_CODE.RET_PARAM_ERROR_CODE
         self.__Socket_UDP(__head, self.__message)
         return self.__socket_reponse()
-
     # web配网模式
     def web_config(self, user, password):
         self.clear_remain()
@@ -126,18 +118,22 @@ class ESP8266:
             self.__message = self.user + ',' + self.password
         self.__Socket_UDP(__head, self.__message)
         return self.__socket_reponse()
-
     def clear_remain(self):
         if self.__queue.empty() == False:
             self.__queue.get()
         self.__err = 0
         self.__value = None
-
+    # 确保socket资源被正确释放  
+    def __del__(self):
+        {
+            self.__sock.close()
+        }
     # 查询网卡状态
     def status(self):
         self.clear_remain()
         self.__Socket_UDP('F1', '0')
         if self.__err == 1:
+            print(int(self.__value[2]))
             return RET_CODE.RET_SUCCESS_CODE
         return int(self.__value[2])
 
@@ -206,6 +202,7 @@ class ESP8266:
     def stop(self):
         _thread.stop_thread(self.__threadid)
         slip.destroy()
+        self.__sock.close()#释放socket
         return RET_CODE.RET_SUCCESS_CODE
 
     # 封装tlv数据包
@@ -248,6 +245,9 @@ class ESP8266:
         data = self.__queue.get()
         self.__wait_resp = 0
         return data
+
+    #def __del__(self):
+       # self.stop()
 
     # socket通信(UDP)模块
     def __Socket_Thread(self):
